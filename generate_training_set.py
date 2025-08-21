@@ -68,8 +68,8 @@ def convert_mat_to_png():
                 mask_binary = (mask_data * 255).astype(np.uint8)
                 
                 # Save as PNG
-                image_path = os.path.join(images_dir, f"{base_name}.png")
-                mask_path = os.path.join(masks_dir, f"{base_name}.png")
+                image_path = os.path.join(images_dir, f"{base_name}.jpg")
+                mask_path = os.path.join(masks_dir, f"{base_name}.jpg")
                 
                 # Save images using PIL
                 Image.fromarray(normalized_image, mode='L').save(image_path)
