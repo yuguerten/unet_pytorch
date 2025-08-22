@@ -175,7 +175,7 @@ def validate_model(model_path, val_folder_path):
 
 if __name__ == "__main__":
     model_path = "unet_model.pth"
-    val_folder_path = "/home/ouaaziz/workplace/unet_pytorch/dataset/val"
+    val_folder_path = "PATH_TO_VAL_FOLDER"
     
     results = validate_model(model_path, val_folder_path)
     print(f"\nFinal Results:")
