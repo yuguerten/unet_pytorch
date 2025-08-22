@@ -1,2 +1,6 @@
 mat_datase*
 dataset
+*.log
+*.pth
+valida*
+__*

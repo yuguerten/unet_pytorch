@@ -3,6 +3,7 @@ import numpy as np
 import h5py
 from PIL import Image
 import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
 
 def create_directory_if_not_exists(directory):
     """Create directory if it doesn't exist"""
@@ -90,5 +91,59 @@ def convert_mat_to_png():
     print(f"Images saved in: {images_dir}")
     print(f"Masks saved in: {masks_dir}")
 
+def split_dataset():
+    """Split the dataset into train (80%) and validation (20%) sets"""
+    dataset_dir = 'dataset'
+    images_dir = os.path.join(dataset_dir, 'images')
+    masks_dir = os.path.join(dataset_dir, 'masks')
+    
+    # Create train/val directories
+    train_dir = os.path.join(dataset_dir, 'train')
+    val_dir = os.path.join(dataset_dir, 'val')
+    
+    train_images_dir = os.path.join(train_dir, 'images')
+    train_masks_dir = os.path.join(train_dir, 'masks')
+    val_images_dir = os.path.join(val_dir, 'images')
+    val_masks_dir = os.path.join(val_dir, 'masks')
+    
+    create_directory_if_not_exists(train_dir)
+    create_directory_if_not_exists(val_dir)
+    create_directory_if_not_exists(train_images_dir)
+    create_directory_if_not_exists(train_masks_dir)
+    create_directory_if_not_exists(val_images_dir)
+    create_directory_if_not_exists(val_masks_dir)
+    
+    # Get all image files
+    image_files = [f for f in os.listdir(images_dir) if f.endswith('.jpg')]
+    image_files.sort()
+    
+    print(f"Found {len(image_files)} image files to split")
+    
+    # Split into train/val (80/20)
+    train_files, val_files = train_test_split(image_files, test_size=0.2, random_state=42)
+    
+    print(f"Train set: {len(train_files)} files")
+    print(f"Validation set: {len(val_files)} files")
+    
+    # Move files to respective directories
+    import shutil
+    
+    for file in train_files:
+        # Copy image and mask
+        shutil.copy2(os.path.join(images_dir, file), os.path.join(train_images_dir, file))
+        shutil.copy2(os.path.join(masks_dir, file), os.path.join(train_masks_dir, file))
+    
+    for file in val_files:
+        # Copy image and mask
+        shutil.copy2(os.path.join(images_dir, file), os.path.join(val_images_dir, file))
+        shutil.copy2(os.path.join(masks_dir, file), os.path.join(val_masks_dir, file))
+    
+    print(f"Dataset split completed!")
+    print(f"Train images: {train_images_dir}")
+    print(f"Train masks: {train_masks_dir}")
+    print(f"Val images: {val_images_dir}")
+    print(f"Val masks: {val_masks_dir}")
+
 if __name__ == "__main__":
     convert_mat_to_png()
+    split_dataset()

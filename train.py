@@ -3,20 +3,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torch.optim import Adam
+from torchvision import transforms
 import numpy as np
 import logging
 import glob
 import os
 import cv2
+import time
+from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 class BrainTumorDataset(Dataset):
-    def __init__(self, folder_path):
+    def __init__(self, folder_path, image_size=(512, 512)):
         super().__init__()
+        self.folder_path = folder_path
+        self.image_size = image_size  # (width, height)
         self.img_files = glob.glob(os.path.join(folder_path, 'images', '*.jpg'))
-        self.mask_files = []
-        
-        # Filter out images that don't have corresponding masks
         valid_pairs = []
         for img_path in self.img_files:
             mask_path = os.path.join(folder_path, 'masks', os.path.basename(img_path))
@@ -24,38 +26,40 @@ class BrainTumorDataset(Dataset):
                 valid_pairs.append((img_path, mask_path))
             else:
                 print(f"Warning: Mask not found for {img_path}")
-        
-        self.img_files = [pair[0] for pair in valid_pairs]
-        self.mask_files = [pair[1] for pair in valid_pairs]
+        self.img_files = [p[0] for p in valid_pairs]
+        self.mask_files = [p[1] for p in valid_pairs]
 
     def __getitem__(self, index):
         img_path = self.img_files[index]
         mask_path = self.mask_files[index]
-        
-        # Read images and check if they loaded successfully
+
         data = cv2.imread(img_path)
-        label = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)  # Masks are typically grayscale
-        
+        label = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+
         if data is None:
             raise ValueError(f"Could not load image: {img_path}")
         if label is None:
             raise ValueError(f"Could not load mask: {mask_path}")
-        
-        # Convert BGR to RGB for the image
+
+        # Resize to fixed size (width, height)
+        w, h = self.image_size
+        data = cv2.resize(data, (w, h), interpolation=cv2.INTER_LINEAR)
+        label = cv2.resize(label, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        # BGR -> RGB
         data = cv2.cvtColor(data, cv2.COLOR_BGR2RGB)
-        
-        # Normalize pixel values to [0, 1]
+
+        # Normalize to [0,1]
         data = data.astype(np.float32) / 255.0
         label = label.astype(np.float32) / 255.0
-        
-        # Convert to tensors and fix dimensions
-        # Image: (H, W, C) -> (C, H, W)
-        data = torch.from_numpy(data).permute(2, 0, 1)
-        # Mask: (H, W) -> (H, W) for single class or convert to proper format
-        label = torch.from_numpy(label)
-        
+
+        # HWC -> CHW
+        data = torch.from_numpy(data).permute(2, 0, 1).float()
+        # add channel dim for mask: (H, W) -> (1, H, W)
+        label = torch.from_numpy(label).unsqueeze(0).float()
+
         return data, label
-    
+
     def __len__(self):
         return len(self.img_files)
 
@@ -129,35 +133,108 @@ class Unet(nn.Module):
         return x
 
 if __name__ == "__main__":
-    folder_path = "/home/yuguerten/workspace/unet_pytorch/dataset"
-    brain_tunor_dataset = BrainTumorDataset(folder_path)
-    train_loader = DataLoader(brain_tunor_dataset, batch_size=16, shuffle=True)
-    model = Unet(in_ch=3, out_ch=1)
-    optimizer = Adam(model.parameters())
+    
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('training.log'),
+            logging.StreamHandler()
+        ]
+    )
+    
+    train_folder_path = "/home/ouaaziz/workplace/unet_pytorch/dataset/train"
+    val_folder_path = "/home/ouaaziz/workplace/unet_pytorch/dataset/val"
+    
+    brain_tumor_train_dataset = BrainTumorDataset(train_folder_path)
+    brain_tumor_val_dataset = BrainTumorDataset(val_folder_path)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    logger.info(f"Device: {device}")
+    logger.info(f"Train dataset size: {len(brain_tumor_train_dataset)}")
+    logger.info(f"Validation dataset size: {len(brain_tumor_val_dataset)}")
+    
+    train_loader = DataLoader(brain_tumor_train_dataset, batch_size=8, shuffle=True)
+    val_loader = DataLoader(brain_tumor_val_dataset, batch_size=8, shuffle=False)
+    model = Unet(in_ch=3, out_ch=1).to(device)
+    optimizer = Adam(model.parameters(), lr=1e-4)
     loss_fct = nn.BCEWithLogitsLoss()
     
-    model.train()
+    logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    logger.info("Starting training...")
+    
+    start_time = time.time()
+    
+    for epoch in range(100):
+        # Training phase
+        model.train()
+        epoch_start = time.time()
+        total_train_loss = 0.0
+        
+        # Progress bar for training batches
+        pbar = tqdm(train_loader, desc=f'Train Epoch {epoch+1}/2', 
+                   unit='batch', dynamic_ncols=True)
+        
+        for batch_idx, (data, label) in enumerate(pbar):
+            data = data.to(device, non_blocking=True)
+            label = label.to(device, non_blocking=True)
 
-    for epoch in range(2):
-        total_loss = 0
-        current_loss = 0
-        for batch_idx, (data, label) in enumerate(train_loader):
             optimizer.zero_grad()
             output = model(data)
-            output = output.squeeze(1)
 
             loss = loss_fct(output, label)
             loss.backward()
             optimizer.step()
 
-            total_loss += loss.item()
-            current_loss += 1
-        
-        print(f"Epoch: {epoch}, Total Loss: {total_loss/current_loss}")
+            total_train_loss += loss.item()
             
-
-
-
+            # Update progress bar
+            pbar.set_postfix({
+                'Loss': f'{loss.item():.4f}',
+                'Avg Loss': f'{total_train_loss/(batch_idx+1):.4f}',
+                'GPU Mem': f'{torch.cuda.memory_allocated()/1e9:.2f}GB' if torch.cuda.is_available() else 'N/A'
+            })
         
+        avg_train_loss = total_train_loss / len(train_loader)
+        
+        # Validation phase
+        model.eval()
+        total_val_loss = 0.0
+        
+        with torch.no_grad():
+            val_pbar = tqdm(val_loader, desc=f'Val Epoch {epoch+1}/2', 
+                           unit='batch', dynamic_ncols=True)
+            
+            for batch_idx, (data, label) in enumerate(val_pbar):
+                data = data.to(device, non_blocking=True)
+                label = label.to(device, non_blocking=True)
+                
+                output = model(data)
+                loss = loss_fct(output, label)
+                total_val_loss += loss.item()
+                
+                val_pbar.set_postfix({
+                    'Val Loss': f'{loss.item():.4f}',
+                    'Avg Val Loss': f'{total_val_loss/(batch_idx+1):.4f}'
+                })
+        
+        avg_val_loss = total_val_loss / len(val_loader)
+        epoch_time = time.time() - epoch_start
+        
+        logger.info(f"Epoch {epoch+1}/2 completed in {epoch_time:.2f}s - "
+                   f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
     
+    total_time = time.time() - start_time
+    logger.info(f"Training completed in {total_time:.2f}s")
+    
+    # Save model
+    torch.save(model.state_dict(), 'unet_model.pth')
+    logger.info("Model saved as 'unet_model.pth'")
+
+
+
+
+
+
 
