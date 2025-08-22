@@ -144,8 +144,8 @@ if __name__ == "__main__":
         ]
     )
     
-    train_folder_path = "/home/ouaaziz/workplace/unet_pytorch/dataset/train"
-    val_folder_path = "/home/ouaaziz/workplace/unet_pytorch/dataset/val"
+    train_folder_path = "PATH_TO_TRAIN_FOLDER"
+    val_folder_path = "PATH_TO_VAL_FOLDER"
     
     brain_tumor_train_dataset = BrainTumorDataset(train_folder_path)
     brain_tumor_val_dataset = BrainTumorDataset(val_folder_path)
@@ -166,14 +166,15 @@ if __name__ == "__main__":
     
     start_time = time.time()
     
-    for epoch in range(100):
+    EPOCHS = 100
+    for epoch in range(EPOCHS):
         # Training phase
         model.train()
         epoch_start = time.time()
         total_train_loss = 0.0
         
         # Progress bar for training batches
-        pbar = tqdm(train_loader, desc=f'Train Epoch {epoch+1}/2', 
+        pbar = tqdm(train_loader, desc=f'Train Epoch {epoch+1}/{EPOCHS}', 
                    unit='batch', dynamic_ncols=True)
         
         for batch_idx, (data, label) in enumerate(pbar):
@@ -203,7 +204,7 @@ if __name__ == "__main__":
         total_val_loss = 0.0
         
         with torch.no_grad():
-            val_pbar = tqdm(val_loader, desc=f'Val Epoch {epoch+1}/2', 
+            val_pbar = tqdm(val_loader, desc=f'Val Epoch {epoch+1}/{EPOCHS}', 
                            unit='batch', dynamic_ncols=True)
             
             for batch_idx, (data, label) in enumerate(val_pbar):
@@ -222,7 +223,7 @@ if __name__ == "__main__":
         avg_val_loss = total_val_loss / len(val_loader)
         epoch_time = time.time() - epoch_start
         
-        logger.info(f"Epoch {epoch+1}/2 completed in {epoch_time:.2f}s - "
+        logger.info(f"Epoch {epoch+1}/50 completed in {epoch_time:.2f}s - "
                    f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
     
     total_time = time.time() - start_time
