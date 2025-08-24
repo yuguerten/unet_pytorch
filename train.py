@@ -11,6 +11,8 @@ import os
 import cv2
 import time
 from tqdm import tqdm
+import warnings
+warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
 class BrainTumorDataset(Dataset):
@@ -68,9 +70,9 @@ class DoubleConv(nn.Module):
     def __init__(self, in_ch, out_ch):
         super().__init__()
         self.block = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1),
+            nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=False),
             nn.ReLU(inplace=True),
-            nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1),
+            nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=False),
             nn.ReLU(inplace=True),
         )
     def forward(self, x):
@@ -115,7 +117,7 @@ class Unet(nn.Module):
             self.decoders.append(Up(prev_ch, feat_ch, feat_ch))
             prev_ch = feat_ch
 
-        self.final_conv = nn.Conv2d(prev_ch, out_ch, kernel_size=1)
+        self.final_conv = nn.Conv2d(prev_ch, out_ch, kernel_size=1, bias=False)
 
     def forward(self, x):
         skips = []
@@ -144,53 +146,81 @@ if __name__ == "__main__":
         ]
     )
     
-    train_folder_path = "PATH_TO_TRAIN_FOLDER"
-    val_folder_path = "PATH_TO_VAL_FOLDER"
-    
+    train_folder_path = "dataset/train"
+    val_folder_path = "dataset/val"
+
+    LEARNING_RATE = 0.001
+    BATCH_SIZE = 16
+    IN_CH = 3
+    OUT_CH = 1
+    EPOCHS = 5
+
+    torch.backends.cudnn.benchmark = True  # speed autotune for fixed size
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     brain_tumor_train_dataset = BrainTumorDataset(train_folder_path)
     brain_tumor_val_dataset = BrainTumorDataset(val_folder_path)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    
-    logger.info(f"Device: {device}")
     logger.info(f"Train dataset size: {len(brain_tumor_train_dataset)}")
     logger.info(f"Validation dataset size: {len(brain_tumor_val_dataset)}")
     
-    train_loader = DataLoader(brain_tumor_train_dataset, batch_size=8, shuffle=True)
-    val_loader = DataLoader(brain_tumor_val_dataset, batch_size=8, shuffle=False)
-    model = Unet(in_ch=3, out_ch=1).to(device)
-    optimizer = Adam(model.parameters(), lr=1e-4)
+    train_loader = DataLoader(
+        brain_tumor_train_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2
+    )
+    val_loader = DataLoader(
+        brain_tumor_val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2
+    )
+
+    model = Unet(in_ch=IN_CH, out_ch=OUT_CH).to(device).to(memory_format=torch.channels_last)
+    try:
+        model = torch.compile(model)  # PyTorch 2.x
+    except Exception:
+        logger.info("torch.compile not used (unsupported environment).")
+
+    optimizer = Adam(model.parameters(), lr=LEARNING_RATE)
+    # If supported: from torch.optim import AdamW; optimizer = AdamW(model.parameters(), lr=LEARNING_RATE, fused=True)
     loss_fct = nn.BCEWithLogitsLoss()
+    scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
     
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     logger.info("Starting training...")
-    
+
     start_time = time.time()
-    
-    EPOCHS = 100
+
     for epoch in range(EPOCHS):
-        # Training phase
         model.train()
         epoch_start = time.time()
         total_train_loss = 0.0
         
-        # Progress bar for training batches
-        pbar = tqdm(train_loader, desc=f'Train Epoch {epoch+1}/{EPOCHS}', 
-                   unit='batch', dynamic_ncols=True)
+        pbar = tqdm(train_loader, desc=f'Train Epoch {epoch+1}/{EPOCHS}', unit='batch', dynamic_ncols=True)
         
         for batch_idx, (data, label) in enumerate(pbar):
-            data = data.to(device, non_blocking=True)
+            data = data.to(device, non_blocking=True).to(memory_format=torch.channels_last)
             label = label.to(device, non_blocking=True)
 
-            optimizer.zero_grad()
-            output = model(data)
+            for param in model.parameters():
+                param.grad = None
 
-            loss = loss_fct(output, label)
-            loss.backward()
-            optimizer.step()
+            with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
+                output = model(data)
+                loss = loss_fct(output, label)
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
 
             total_train_loss += loss.item()
-            
-            # Update progress bar
             pbar.set_postfix({
                 'Loss': f'{loss.item():.4f}',
                 'Avg Loss': f'{total_train_loss/(batch_idx+1):.4f}',
@@ -199,22 +229,17 @@ if __name__ == "__main__":
         
         avg_train_loss = total_train_loss / len(train_loader)
         
-        # Validation phase
         model.eval()
         total_val_loss = 0.0
-        
         with torch.no_grad():
-            val_pbar = tqdm(val_loader, desc=f'Val Epoch {epoch+1}/{EPOCHS}', 
-                           unit='batch', dynamic_ncols=True)
-            
+            val_pbar = tqdm(val_loader, desc=f'Val Epoch {epoch+1}/{EPOCHS}', unit='batch', dynamic_ncols=True)
             for batch_idx, (data, label) in enumerate(val_pbar):
-                data = data.to(device, non_blocking=True)
+                data = data.to(device, non_blocking=True).to(memory_format=torch.channels_last)
                 label = label.to(device, non_blocking=True)
-                
-                output = model(data)
-                loss = loss_fct(output, label)
+                with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
+                    output = model(data)
+                    loss = loss_fct(output, label)
                 total_val_loss += loss.item()
-                
                 val_pbar.set_postfix({
                     'Val Loss': f'{loss.item():.4f}',
                     'Avg Val Loss': f'{total_val_loss/(batch_idx+1):.4f}'
@@ -222,14 +247,10 @@ if __name__ == "__main__":
         
         avg_val_loss = total_val_loss / len(val_loader)
         epoch_time = time.time() - epoch_start
-        
-        logger.info(f"Epoch {epoch+1}/50 completed in {epoch_time:.2f}s - "
-                   f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        logger.info(f"Epoch {epoch+1}/{EPOCHS} took {epoch_time:.2f}s - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
     
     total_time = time.time() - start_time
     logger.info(f"Training completed in {total_time:.2f}s")
-    
-    # Save model
     torch.save(model.state_dict(), 'unet_model.pth')
     logger.info("Model saved as 'unet_model.pth'")
 
