@@ -8,6 +8,30 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from train import BrainTumorDataset, Unet
 import os
+import cv2
+
+def apply_color_mask(image, mask, color=(255, 0, 0), alpha=0.4, threshold=0.5):
+    """Return an RGB image with a colored transparent overlay where mask==1.
+
+    Args:
+        image (np.ndarray): Original image in range [0,1] shape (H,W,3)
+        mask (np.ndarray): Predicted (or true) mask probabilities shape (H,W) or (1,H,W)
+        color (tuple): BGR color (as OpenCV uses) or RGB? We'll accept RGB then convert.
+        alpha (float): Transparency of overlay color.
+        threshold (float): Threshold to binarize predicted mask.
+    """
+    if mask.ndim == 3:
+        mask = mask[0]
+    # Binarize
+    bin_mask = (mask >= threshold).astype(np.uint8)
+    # Ensure image float
+    img = image.copy()
+    img = np.clip(img, 0, 1)
+    # Create color layer (convert RGB->BGR for cv2 blending if using cv2)
+    overlay = (np.array(color).reshape(1,1,3) / 255.0).astype(np.float32)
+    overlay_img = img.copy()
+    overlay_img[bin_mask == 1] = (1 - alpha) * overlay_img[bin_mask == 1] + alpha * overlay
+    return overlay_img, bin_mask
 
 def calculate_iou(pred, target, threshold=0.5):
     """Calculate Intersection over Union (IoU) metric"""
@@ -31,8 +55,15 @@ def calculate_dice(pred, target, threshold=0.5):
     
     return dice.mean()
 
-def visualize_predictions(model, val_loader, device, num_samples=5):
-    """Visualize some predictions"""
+def visualize_predictions(model, val_loader, device, num_samples=5, threshold=0.5):
+    """Visualize some predictions with colored overlays.
+
+    Saves figures like validation_samples_<idx>.png containing:
+        Column 1: Original image
+        Column 2: True mask overlay (green)
+        Column 3: Predicted mask overlay (red)
+        Column 4: Side-by-side true (green) + predicted (red edges) optional (only if binary mask present)
+    """
     model.eval()
     samples_shown = 0
     
@@ -54,7 +85,7 @@ def visualize_predictions(model, val_loader, device, num_samples=5):
             
             batch_size = min(data.size(0), num_samples - samples_shown)
             
-            fig, axes = plt.subplots(batch_size, 3, figsize=(12, 4 * batch_size))
+            fig, axes = plt.subplots(batch_size, 3, figsize=(15, 4 * batch_size))
             if batch_size == 1:
                 axes = axes.reshape(1, -1)
             
@@ -62,17 +93,19 @@ def visualize_predictions(model, val_loader, device, num_samples=5):
                 # Original image (convert CHW to HWC)
                 img = np.transpose(images[i], (1, 2, 0))
                 axes[i, 0].imshow(img)
-                axes[i, 0].set_title('Original Image')
+                axes[i, 0].set_title('Original')
                 axes[i, 0].axis('off')
-                
-                # True mask
-                axes[i, 1].imshow(true_masks[i, 0], cmap='gray')
-                axes[i, 1].set_title('True Mask')
+
+                # True mask overlay (green)
+                true_overlay, _ = apply_color_mask(img, true_masks[i], color=(0, 255, 0), alpha=0.45, threshold=threshold)
+                axes[i, 1].imshow(true_overlay)
+                axes[i, 1].set_title('True Overlay')
                 axes[i, 1].axis('off')
-                
-                # Predicted mask
-                axes[i, 2].imshow(pred_masks[i, 0], cmap='gray')
-                axes[i, 2].set_title('Predicted Mask')
+
+                # Predicted mask overlay (red)
+                pred_overlay, pred_bin = apply_color_mask(img, pred_masks[i], color=(255, 0, 0), alpha=0.45, threshold=threshold)
+                axes[i, 2].imshow(pred_overlay)
+                axes[i, 2].set_title('Pred Overlay')
                 axes[i, 2].axis('off')
             
             plt.tight_layout()
@@ -106,7 +139,7 @@ def validate_model(model_path, val_folder_path):
     # Load model
     model = Unet(in_ch=3, out_ch=1).to(device)
     if os.path.exists(model_path):
-        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.load_state_dict(torch.load(model_path, map_location=device), strict=False)
         logger.info(f"Model loaded from {model_path}")
     else:
         logger.error(f"Model file {model_path} not found!")
@@ -174,8 +207,8 @@ def validate_model(model_path, val_folder_path):
     }
 
 if __name__ == "__main__":
-    model_path = "unet_model.pth"
-    val_folder_path = "PATH_TO_VAL_FOLDER"
+    model_path = "/home/ouaaziz/workplace/unet_pytorch/models/unet_model_4.pth"
+    val_folder_path = "dataset/val"
     
     results = validate_model(model_path, val_folder_path)
     print(f"\nFinal Results:")

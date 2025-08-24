@@ -71,8 +71,10 @@ class DoubleConv(nn.Module):
         super().__init__()
         self.block = nn.Sequential(
             nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=False),
+            # nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=False),
+            # nn.BatchNorm2d(out_ch),
             nn.ReLU(inplace=True),
         )
     def forward(self, x):
@@ -150,10 +152,10 @@ if __name__ == "__main__":
     val_folder_path = "dataset/val"
 
     LEARNING_RATE = 0.001
-    BATCH_SIZE = 16
+    BATCH_SIZE = 32
     IN_CH = 3
     OUT_CH = 1
-    EPOCHS = 5
+    EPOCHS = 100
 
     torch.backends.cudnn.benchmark = True  # speed autotune for fixed size
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -167,7 +169,7 @@ if __name__ == "__main__":
         brain_tumor_train_dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        num_workers=4,
+        num_workers=8,
         pin_memory=True,
         persistent_workers=True,
         prefetch_factor=2
@@ -176,7 +178,7 @@ if __name__ == "__main__":
         brain_tumor_val_dataset,
         batch_size=BATCH_SIZE,
         shuffle=False,
-        num_workers=4,
+        num_workers=8,
         pin_memory=True,
         persistent_workers=True,
         prefetch_factor=2
