@@ -15,6 +15,10 @@ import warnings
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
+import wandb
+
+_WANDB_AVAILABLE = True
+
 class BrainTumorDataset(Dataset):
     def __init__(self, folder_path, image_size=(512, 512)):
         super().__init__()
@@ -139,14 +143,14 @@ class Unet(nn.Module):
 if __name__ == "__main__":
     
     # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('training.log'),
-            logging.StreamHandler()
-        ]
-    )
+    # logging.basicConfig(
+    #     level=logging.INFO,
+    #     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    #     handlers=[
+    #         logging.FileHandler('training.log'),
+    #         logging.StreamHandler()
+    #     ]
+    # )
     
     train_folder_path = "dataset/train"
     val_folder_path = "dataset/val"
@@ -156,6 +160,21 @@ if __name__ == "__main__":
     IN_CH = 3
     OUT_CH = 1
     EPOCHS = 100
+    LOG_INTERVAL = 25  # batches
+    SAVE_BEST = True
+    BEST_VAL = float('inf')
+
+    if _WANDB_AVAILABLE:
+        wandb.init(project="unet-brain-tumor", config={
+            'learning_rate': LEARNING_RATE,
+            'batch_size': BATCH_SIZE,
+            'epochs': EPOCHS,
+            'architecture': 'UNet',
+            'image_size': (512, 512)
+        })
+        # Avoid redundant watch warnings
+        if not getattr(wandb, 'watch_called', False):
+            wandb.watch_called = True
 
     torch.backends.cudnn.benchmark = True  # speed autotune for fixed size
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -199,6 +218,7 @@ if __name__ == "__main__":
     logger.info("Starting training...")
 
     start_time = time.time()
+    timestamp = int(time.time())
 
     for epoch in range(EPOCHS):
         model.train()
@@ -206,7 +226,6 @@ if __name__ == "__main__":
         total_train_loss = 0.0
         
         pbar = tqdm(train_loader, desc=f'Train Epoch {epoch+1}/{EPOCHS}', unit='batch', dynamic_ncols=True)
-        
         for batch_idx, (data, label) in enumerate(pbar):
             data = data.to(device, non_blocking=True).to(memory_format=torch.channels_last)
             label = label.to(device, non_blocking=True)
@@ -222,12 +241,19 @@ if __name__ == "__main__":
             scaler.step(optimizer)
             scaler.update()
 
-            total_train_loss += loss.item()
+            batch_loss = loss.item()
+            total_train_loss += batch_loss
             pbar.set_postfix({
-                'Loss': f'{loss.item():.4f}',
+                'Loss': f'{batch_loss:.4f}',
                 'Avg Loss': f'{total_train_loss/(batch_idx+1):.4f}',
                 'GPU Mem': f'{torch.cuda.memory_allocated()/1e9:.2f}GB' if torch.cuda.is_available() else 'N/A'
             })
+            if _WANDB_AVAILABLE and (batch_idx % LOG_INTERVAL == 0):
+                wandb.log({
+                    'train/batch_loss': batch_loss,
+                    'train/avg_loss_running': total_train_loss/(batch_idx+1),
+                    'epoch': epoch + batch_idx / len(train_loader)
+                })
         
         avg_train_loss = total_train_loss / len(train_loader)
         
@@ -246,16 +272,22 @@ if __name__ == "__main__":
                     'Val Loss': f'{loss.item():.4f}',
                     'Avg Val Loss': f'{total_val_loss/(batch_idx+1):.4f}'
                 })
-        
         avg_val_loss = total_val_loss / len(val_loader)
+        if _WANDB_AVAILABLE:
+            wandb.log({
+                'epoch': epoch + 1,
+                'train/epoch_loss': avg_train_loss,
+                'val/epoch_loss': avg_val_loss
+            })
         epoch_time = time.time() - epoch_start
         logger.info(f"Epoch {epoch+1}/{EPOCHS} took {epoch_time:.2f}s - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
-    
+        torch.save(model.state_dict(), f'models/unet_model_{timestamp}_{epoch+1}.pth')
+
     total_time = time.time() - start_time
     logger.info(f"Training completed in {total_time:.2f}s")
-    torch.save(model.state_dict(), 'unet_model.pth')
-    logger.info("Model saved as 'unet_model.pth'")
-
+    
+    if _WANDB_AVAILABLE:
+        wandb.finish()
 
 
 
